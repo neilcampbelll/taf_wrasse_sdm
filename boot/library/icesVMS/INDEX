@@ -1,0 +1,31 @@
+check_ecoregion         Lists of Vocabularies
+get_benthis_parameters
+                        Get gear characteristics for 'benthis' gear
+                        categories
+get_csquare             Download C-square information
+get_ecoregion_list      Lists of Vocabularies
+get_effort_map          Download fishing effort map data
+get_fo_effort           Download fishing effort summaries
+get_fo_landings         Download fishing landings summaries
+get_logbook             Download Logbook data
+get_metier_lookup       Link Metier level 6 to Benthis categories
+get_passive_footprint   Download passive fishing gear footprint
+get_sar                 Download VMS data
+get_sar_map             Download swept area ratio map data
+get_screening_details   Get the details of a file screening session
+get_screening_messages
+                        Get all messages of a file screening session
+get_upload_summary      Download a summary of submitted data
+get_vms                 Download VMS data
+get_wgfbit_data1        Download swept area ratio, landings and value
+                        map data
+get_wgfbit_data2        Download swept area ratio, landings and value
+                        map data
+get_wgfbit_data3        Download swept area ratio, landings and value
+                        map data
+icesVMS-package         Functions to link to the ICES VMS and logbook
+                        database web services.
+screen_vms_file         Screen a VMS file and submit for QC checks
+sum_distinct_vessels    Add together anonymous ID entries
+vms_api                 Build a VMS web service url
+wkt_csquare             Build a WKT string from latitude and longitude

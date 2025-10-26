@@ -1,0 +1,17 @@
+area                    Fetch a list of areas
+checklist               Create a checklist.
+dataset                 Create a list of datasets.
+dna_records             Extract DNA records from occurrence data with a
+                        dna column.
+generate_citation       Generate a citation from metadata elements.
+get_geometry            Get a WKT geometry by drawing on a map.
+map_ggplot              Create a ggplot2 map.
+map_leaflet             Create a leaflet map.
+measurements            Extract measurements or facts from occurrence
+                        data with a mof column.
+node                    Fetch a list of nodes
+occurrence              Find occurrences.
+robis                   R client for the OBIS API
+taxon                   Get taxon by taxon ID.
+unnest_extension        Extract extension records from occurrence data
+                        with nested extension column.

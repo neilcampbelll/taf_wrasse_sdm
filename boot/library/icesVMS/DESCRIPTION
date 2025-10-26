@@ -1,0 +1,34 @@
+Package: icesVMS
+Version: 1.1.6
+Title: Link to the ICES Vessel Monitoring System and Logbook Database
+        Web Services
+Authors@R: c(person("Colin", "Millar", role=c("aut","cre"), email="colin.millar@ices.dk"),
+           person("Carlos", "Pinto", role="ctb"))
+Imports: glue, httr, icesConnect (>= 1.0.0), icesVocab, icesDatsuQC (>=
+        1.1.0)
+Suggests: sf
+Description: Links to the ICES Vessel Monitoring System (VMS) and logbook database web services
+           <https://data.ices.dk/vms/webservices> to allow users to download summaries and data
+           products.
+License: GPL (>= 2)
+URL: https://data.ices.dk/vms,
+        https://github.com/ices-tools-prod/icesVMS
+Encoding: UTF-8
+RoxygenNote: 7.3.2
+Depends: R (>= 4.0)
+LazyData: true
+BugReports: https://github.com/ices-tools-prod/icesVMS/issues
+RemoteType: github
+RemoteHost: api.github.com
+RemoteRepo: icesVMS
+RemoteUsername: ices-tools-prod
+RemoteRef: master
+RemoteSha: fae284555597a7876669c2b939f04da13d20f2aa
+GithubRepo: icesVMS
+GithubUsername: ices-tools-prod
+GithubRef: master
+GithubSHA1: fae284555597a7876669c2b939f04da13d20f2aa
+Author: Colin Millar [aut, cre],
+  Carlos Pinto [ctb]
+Maintainer: Colin Millar <colin.millar@ices.dk>
+Built: R 4.5.0; ; 2025-10-26 18:38:28 UTC; windows
