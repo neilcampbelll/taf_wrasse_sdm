@@ -21,6 +21,7 @@ source("libraries.R")
 ## "boot/initial/data/", along with writing some metadata to a json file
 source("boot/get_bounding_box.R")
 source("boot/get_obis_data.R")
+source("boot/data_script.R")
 
 ## "boots" the TAF process, copying the data from the initial to the data
 ## folder, making it available for further processing 
