@@ -1,330 +1,138 @@
 # ============================================================================
-# DATA OBSERVATION PROCESSING 
+# Before: Species occurrence records (coordinates only) in GEOPACKAGE_PATH
+# After:  Presence records clipped to Scottish waters with environmental values
+#         assigned from the same gridded layers used for pseudo-absences,
+#         saved to OUTPUT_PATH
 # ============================================================================
-# Before: Species occurrence records from OBIS with basic coordinates
-# After: Enhanced species records with habitat assignments and standardized variables
-# ============================================================================
 
-# LOAD UTILITIES AND CONFIGURATION ==========================================
-source("utilities.R")
+sf_use_s2(FALSE)
 
-cat("=== DATA PROCESSING ===\n")
+cat("Processing species records\n")
 
-OUTPUT_PATH <- "data/modelling_data.gpkg"
+WRASSE_SPECIES <- c("Labrus_bergylta", "Labrus_mixtus", "Centrolabrus_exoletus",
+                    "Ctenolabrus_rupestris", "Symphodus_melops")
 
-# TARGET SPECIES LIST (from project configuration)
-WRASSE_SPECIES <- c("Labrus bergylta", "Labrus mixtus", "Centrolabrus exoletus",
-                    "Ctenolabrus rupestris", "Symphodus melops")
+# LOAD ENVIRONMENTAL LAYERS ==================================================
 
-cat("Processing", length(WRASSE_SPECIES), "wrasse species:\n")
-for(sp in WRASSE_SPECIES) cat("-", sp, "\n")
-cat("\n")
+cat("Loading environmental layers...\n")
 
-# LOAD HABITAT DATA ======================================================
-cat("Step 1: Loading benthic habitat data...\n")
+scottish_waters <- st_read(GEOPACKAGE_PATH, "Scottish_Inshore_Waters",   quiet = TRUE)
+dist_grid       <- st_read(GEOPACKAGE_PATH, "Scottish_Coastal_Distances", quiet = TRUE)
+bathymetry      <- st_read(GEOPACKAGE_PATH, "bathymetry",                 quiet = TRUE)
+sst_layer       <- st_read(GEOPACKAGE_PATH, "sst_temperature",            quiet = TRUE)
+sss_layer       <- st_read(GEOPACKAGE_PATH, "sss_salinity",               quiet = TRUE)
 
-tryCatch({
-  # Check if habitat layer exists
-  available_layers <- st_layers(GEOPACKAGE_PATH)$name
+sst_col <- intersect(c("sst", "temperature"), names(sst_layer))[1]
+sss_col <- intersect(c("sss", "salinity"),    names(sss_layer))[1]
+cat("  SST column:", sst_col, "| Salinity column:", sss_col, "\n")
 
-  if(!"MSFD_Habitats" %in% available_layers) {
-    stop("MSFD_Habitats layer not found. Available layers: ",
-         paste(available_layers, collapse = ", "))
+  cat("  Loading and cropping habitat layer to Scottish waters...\n")
+  habitat_layer <- st_read(GEOPACKAGE_PATH, "MSFD_Habitats", quiet = TRUE)
+  habitat_layer <- st_crop(habitat_layer, st_bbox(scottish_waters))
+  habitat_proj  <- st_transform(habitat_layer["MSFD_BBHT"], 27700)
+  cat("  Habitat layer ready\n")
+
+cat("Environmental layers ready\n\n")
+
+# Combine into one object so all spatial joins run once across all species
+
+cat("Clipping species records...\n")
+
+gp_layers    <- st_layers(GEOPACKAGE_PATH)$name
+records_list <- list()
+
+for (sp in WRASSE_SPECIES) {
+  layer_name <- paste0(sp, "_records")
+  if (!layer_name %in% gp_layers) {
+    cat("  Layer not found, skipping:", layer_name, "\n")
+    next
   }
-
-  # Load habitat layer with validation
-  habitat_layer <- st_read(GEOPACKAGE_PATH, layer = "MSFD_Habitats", quiet = TRUE)
-
-  # Validate habitat layer
-  if(nrow(habitat_layer) == 0) {
-    stop("Habitat layer is empty")
+  records   <- st_read(GEOPACKAGE_PATH, layer_name, quiet = TRUE)
+  keep_cols <- intersect(c("basisOfRecord", "originalScientificName", "aphiaID"),
+                         names(records))
+  records   <- records[, keep_cols]
+  records   <- st_filter(records, scottish_waters)
+  if (nrow(records) > 0) {
+    records$species_layer <- sp
+    records_list[[sp]]    <- records
+    cat(" ", gsub("_", " ", sp), ":", nrow(records), "records within Scottish waters\n")
+  } else {
+    cat(" ", gsub("_", " ", sp), ": no records within Scottish waters\n")
   }
-
-  if(!inherits(habitat_layer, "sf")) {
-    stop("Habitat layer is not a valid sf object")
-  }
-
-  # Identify habitat attribute columns
-  habitat_cols <- names(habitat_layer)[!names(habitat_layer) %in% c("geometry", "geom")]
-
-  cat("Loaded habitat layer with", nrow(habitat_layer), "polygons\n")
-  cat("Available habitat attributes:", paste(habitat_cols, collapse = ", "), "\n")
-
-}, error = function(e) {
-  stop("Failed to load habitat data: ", e$message)
-})
-
-
-# PROCESS EACH SPECIES ===================================================
-cat("\nStep 2: Processing species occurrence data...\n")
-
-# Process each wrasse species individually
-for(species_name in WRASSE_SPECIES) {
-
-  cat("\n--- Processing:", species_name, "---\n")
-
-  # Generate layer name following project conventions
-  layer_name <- paste0(gsub("\\s", "_", species_name), "_records")
-
-  # Load species occurrence data with validation
-  tryCatch({
-
-    # Check if species layer exists
-    if(!layer_name %in% st_layers(GEOPACKAGE_PATH)$name) {
-      cat("Warning: Layer", layer_name, "not found, skipping species\n")
-      next
-    }
-
-    # Load species data
-    wrasse_points <- st_read(GEOPACKAGE_PATH, layer = layer_name, quiet = TRUE)
-
-    # Validate species data
-    if(nrow(wrasse_points) == 0) {
-      cat("Warning: No records found for", species_name, ", skipping\n")
-      next
-    }
-
-    cat("✓ Loaded", nrow(wrasse_points), "occurrence records\n")
-  
-    # HABITAT ASSIGNMENT ================================================
-    cat("Assigning habitat values to occurrence points...\n")
-
-    # Transform to British National Grid for accurate spatial operations
-    cat("Transforming to British National Grid (EPSG:27700)...\n")
-    wrasse_proj <- st_transform(wrasse_points, 27700)
-    habitat_proj <- st_transform(habitat_layer, 27700)
-
-
-    # METHOD 1: Point-in-polygon intersection (primary method)
-    cat("Step 1: Point-in-polygon intersection...\n")
-
-    intersected <- tryCatch({
-      st_intersection(wrasse_proj, habitat_proj)
-    }, error = function(e) {
-      cat("Intersection failed, using alternative approach:\n")
-      cat("  Error:", e$message, "\n")
-      return(NULL)
-    })
-
-    if(is.null(intersected)) {
-      # Fallback: use st_join if intersection fails
-      intersected <- st_join(wrasse_proj, habitat_proj, join = st_within)
-      intersected <- intersected[!is.na(intersected[[habitat_cols[1]]]), ]
-    }
-
-    # Assess intersection success
-    points_with_habitat <- nrow(intersected)
-    points_without_habitat <- nrow(wrasse_points) - points_with_habitat
-
-    cat("Points with habitat data:", points_with_habitat, "\n")
-    cat("Points requiring nearest neighbor:", points_without_habitat, "\n")
-
-
-    # METHOD 2: Nearest neighbor for points without habitat assignment
-    if(points_without_habitat > 0) {
-      cat("Step 2: Nearest neighbor assignment for", points_without_habitat, "points...\n")
-
-      # Identify points that need nearest neighbor assignment
-      intersected_ids <- as.numeric(row.names(intersected))
-      missing_ids <- setdiff(1:nrow(wrasse_proj), intersected_ids)
-      missing_points <- wrasse_proj[missing_ids, ]
-
-      # Find nearest habitat polygon for each missing point
-      nearest_indices <- st_nearest_feature(missing_points, habitat_proj)
-      nearest_habitat <- habitat_proj[nearest_indices, ]
-
-      # Calculate assignment distances for quality control
-      distances <- st_distance(missing_points, nearest_habitat, by_element = TRUE)
-      distances_km <- as.numeric(distances) / 1000
-
-      cat("Nearest neighbor distances - Mean:", round(mean(distances_km), 2),
-          "km, Max:", round(max(distances_km), 2), "km\n")
-
-      # Quality control: warn about very distant assignments
-      distant_assignments <- sum(distances_km > 10)
-      if(distant_assignments > 0) {
-        cat("Warning:", distant_assignments, "points assigned habitat >10km away\n")
-      }
-
-      # Create complete dataset with habitat assignments
-      missing_with_habitat <- missing_points
-
-      # Add habitat attributes from nearest neighbors
-      for(col in habitat_cols) {
-        if(col %in% names(nearest_habitat)) {
-          missing_with_habitat[[col]] <- st_drop_geometry(nearest_habitat)[[col]]
-        }
-      }
-
-      # Harmonize column structure between datasets
-      intersected_cols <- names(intersected)
-      original_cols <- names(wrasse_proj)
-      habitat_only_cols <- setdiff(intersected_cols, original_cols)
-
-      # Ensure missing_with_habitat has all required columns
-      for(col in habitat_only_cols) {
-        if(!col %in% names(missing_with_habitat)) {
-          # Determine appropriate NA type
-          if(col %in% names(intersected)) {
-            col_class <- class(intersected[[col]])[1]
-            missing_with_habitat[[col]] <- switch(col_class,
-              "character" = NA_character_,
-              "numeric" = NA_real_,
-              "integer" = NA_integer_,
-              NA
-            )
-          }
-        }
-      }
-
-      # Reorder columns to match intersected dataset
-      missing_with_habitat <- missing_with_habitat[, intersected_cols]
-
-      # Combine all data
-      all_with_habitat <- rbind(intersected, missing_with_habitat)
-
-      # Restore original point order
-      all_ids <- c(intersected_ids, missing_ids)
-      reorder_indices <- order(all_ids)
-      all_with_habitat <- all_with_habitat[reorder_indices, ]
-
-    } else {
-      all_with_habitat <- intersected
-      cat("All points successfully assigned habitat via intersection\n")
-    }
-
-
-    # FINALIZE SPECIES DATA =============================================
-
-    # Transform back to project CRS (WGS84)
-    wrasse_with_habitat <- st_transform(all_with_habitat, st_crs(wrasse_points))
-
-    # Apply standardization system to ensure consistent variable names and units
-    cat("Applying standardization system...\n")
-    wrasse_with_habitat <- standardize_dataset(wrasse_with_habitat, standardize_values = TRUE)
-
-
-    # DATA QUALITY ASSESSMENT ===========================================
-    cat("\n--- Quality Assessment for", species_name, "---\n")
-    cat("Total observations with habitat:", nrow(wrasse_with_habitat), "\n")
-
-    # Assess habitat assignment completeness
-    for(col in habitat_cols) {
-      if(col %in% names(wrasse_with_habitat)) {
-        na_count <- sum(is.na(wrasse_with_habitat[[col]]))
-        complete_pct <- round((1 - na_count/nrow(wrasse_with_habitat)) * 100, 1)
-        cat(" ", col, "completeness:", complete_pct, "% (", na_count, "missing)\n")
-
-        # Summarize categorical habitat variables
-        if(is.character(wrasse_with_habitat[[col]]) || is.factor(wrasse_with_habitat[[col]])) {
-          habitat_summary <- table(wrasse_with_habitat[[col]], useNA = "ifany")
-
-          if(length(habitat_summary) <= 10) {
-            cat("  Habitat distribution:\n")
-            for(i in 1:length(habitat_summary)) {
-              cat("    ", names(habitat_summary)[i], ":", habitat_summary[i], "\n")
-            }
-          } else {
-            cat("  ", length(habitat_summary), "habitat categories (showing top 5):\n")
-            top_habitats <- sort(habitat_summary, decreasing = TRUE)[1:5]
-            for(i in 1:length(top_habitats)) {
-              cat("    ", names(top_habitats)[i], ":", top_habitats[i], "\n")
-            }
-          }
-        }
-      }
-    }
-
-
-    # FINAL VALIDATION ===============================================
-
-    # Check for spatial validity
-    if(!all(st_is_valid(wrasse_with_habitat))) {
-      cat("Warning: Some geometries are invalid, attempting repair...\n")
-      wrasse_with_habitat <- st_make_valid(wrasse_with_habitat)
-    }
-
-    # Ensure consistent CRS
-    if(st_crs(wrasse_with_habitat)$epsg != 4326) {
-      cat("Warning: CRS mismatch, transforming to WGS84...\n")
-      wrasse_with_habitat <- st_transform(wrasse_with_habitat, 4326)
-    }
-
-
-    # SAVE ENHANCED SPECIES DATA ====================================
-    cat("\nSaving species data...\n")
-
-    # Save using enhanced geopackage function with standardization
-    success <- save_to_geopackage(
-      data_sf = wrasse_with_habitat,
-      layer_name = layer_name,
-      geopackage_path = OUTPUT_PATH,
-      overwrite = TRUE,
-      standardize = FALSE  # Already standardized above
-    )
-
-    if(success) {
-      cat("Saved", species_name, "data with habitat assignments\n")
-    } else {
-      cat("Failed to save", species_name, "data\n")
-    }
-
-
-    # OPTIONAL: CREATE HABITAT DISTRIBUTION PLOT ====================
-    if(get_config(c("visualization", "create_plots"), FALSE)) {
-
-      # Check if primary habitat column exists
-      primary_habitat_col <- NULL
-      for(col in c("MSFD_BBHT", "habitat_type", "substrate_type")) {
-        if(col %in% names(wrasse_with_habitat)) {
-          primary_habitat_col <- col
-          break
-        }
-      }
-
-      if(!is.null(primary_habitat_col)) {
-        # Create plot data (remove NA values)
-        plot_data <- wrasse_with_habitat[!is.na(wrasse_with_habitat[[primary_habitat_col]]), ]
-
-        if(nrow(plot_data) > 0) {
-          cat("Creating habitat distribution plot...\n")
-
-          # Ensure plots directory exists
-          if(!dir.exists("plots")) dir.create("plots", showWarnings = FALSE)
-
-          # Create habitat distribution plot
-          habitat_plot <- ggplot(plot_data) +
-            geom_sf(aes_string(color = primary_habitat_col), size = 0.8, alpha = 0.7) +
-            labs(
-              title = paste(species_name, "- Habitat Distribution"),
-              subtitle = paste("n =", nrow(plot_data), "observations with habitat data"),
-              color = "Habitat Type"
-            ) +
-            theme_minimal() +
-            theme(
-              legend.position = "bottom",
-              legend.text = element_text(size = 8),
-              axis.text = element_text(size = 8),
-              plot.title = element_text(size = 12, face = "bold")
-            ) +
-            guides(color = guide_legend(ncol = 2, override.aes = list(size = 2)))
-
-          # Save plot
-          plot_filename <- file.path("plots", paste0(gsub("\\s", "_", species_name), "_habitat_distribution.png"))
-
-          tryCatch({
-            ggsave(plot_filename, habitat_plot, width = 12, height = 8, dpi = 300)
-            cat("Saved habitat plot:", plot_filename, "\n")
-          }, error = function(e) {
-            cat("Failed to save plot:", e$message, "\n")
-          })
-        }
-      }
-    }
-
-  }, error = function(e) {
-    cat("Error processing", species_name, ":", e$message, "\n")
-  })
-
 }
-cat("DATA PROCESSING COMPLETE")
+
+if (length(records_list) == 0) stop("No species records found in Scottish waters.")
+
+combined <- do.call(rbind, records_list)
+cat("\nTotal records to process:", nrow(combined), "\n\n")
+
+# ASSIGN ENVIRONMENTAL VALUES ONCE ACROSS ALL SPECIES ========================
+
+cat("Assigning environmental values...\n")
+
+cat("  Depth...\n")
+nn <- st_nearest_feature(combined, bathymetry)
+combined$depth_m <- bathymetry$depth_m[nn]
+combined$depth_m[combined$depth_m > 0] <- 0
+
+cat("  Distance to coast...\n")
+nn <- st_nearest_feature(combined, dist_grid)
+combined$dist_to_coast_km <- dist_grid$dist_to_coast_km[nn]
+
+cat("  SST...\n")
+nn <- st_nearest_feature(combined, sst_layer)
+combined$sst <- sst_layer[[sst_col]][nn]
+
+cat("  Salinity...\n")
+nn <- st_nearest_feature(combined, sss_layer)
+combined$sss <- sss_layer[[sss_col]][nn]
+
+if (has_habitat) {
+  cat("  Habitat (point-in-polygon + nearest-neighbour fallback)...\n")
+  combined_proj <- st_transform(combined, 27700)
+
+  joined <- st_join(combined_proj, habitat_proj, join = st_intersects, left = TRUE)
+  joined <- joined[!duplicated(row.names(joined)), ]
+  combined$MSFD_BBHT <- joined$MSFD_BBHT
+
+  missing <- is.na(combined$MSFD_BBHT)
+  if (any(missing)) {
+    nn_hab <- st_nearest_feature(combined_proj[missing, ], habitat_proj)
+    combined$MSFD_BBHT[missing] <- habitat_proj$MSFD_BBHT[nn_hab]
+  }
+  cat("  Habitat assigned:", sum(!is.na(combined$MSFD_BBHT)), "/", nrow(combined), "\n")
+  rm(combined_proj, joined, missing, nn_hab)
+}
+
+combined$presence <- 1L
+cat("Environmental assignment complete\n\n")
+
+# SPLIT BY SPECIES AND SAVE ==================================================
+
+cat("Saving species records to modelling geopackage...\n")
+
+for (sp in WRASSE_SPECIES) {
+  sp_records <- combined[combined$species_layer == sp, ]
+  sp_records$species_layer <- NULL
+
+  if (nrow(sp_records) == 0) next
+
+  layer_name <- paste0(sp, "_records")
+  fmt <- function(x) paste(round(min(x, na.rm=TRUE), 1), "to", round(max(x, na.rm=TRUE), 1))
+  cat(" ", gsub("_", " ", sp), "(n =", nrow(sp_records), ")\n")
+  cat("    depth_m:", fmt(sp_records$depth_m), "m |",
+      "sst:", fmt(sp_records$sst), "°C |",
+      "sss:", fmt(sp_records$sss), "PSU |",
+      "dist:", fmt(sp_records$dist_to_coast_km), "km\n")
+
+  st_write(sp_records, OUTPUT_PATH, layer = layer_name,
+           delete_layer = TRUE, quiet = TRUE)
+}
+
+cat("\n=== OBSERVATION PROCESSING COMPLETE ===\n")
+
+rm(WRASSE_SPECIES, scottish_waters, dist_grid, bathymetry, sst_layer, sss_layer,
+   sst_col, sss_col, gp_layers, records_list, sp, layer_name, records, keep_cols,
+   combined, nn, fmt, sp_records)
+if (has_habitat) rm(has_habitat, habitat_layer, habitat_proj)
+if (exists("has_habitat")) rm(has_habitat)

@@ -56,6 +56,12 @@ bathymetry_marine <- bathymetry %>%
 
 cat("  ✓ Filtered to", nrow(bathymetry_marine), "marine points (negative depth)\n")
 
+# Clip to Scottish inshore waters — must match presence record extent
+cat("  Clipping to Scottish inshore waters...\n")
+scottish_waters   <- st_read(GEOPACKAGE_PATH, "Scottish_Inshore_Waters", quiet = TRUE)
+bathymetry_marine <- st_filter(bathymetry_marine, scottish_waters)
+cat("  ✓ Clipped to", nrow(bathymetry_marine), "points within Scottish inshore waters\n")
+
 # Sample subset for efficiency
 set.seed(PSEUDO_CONFIG$seed)
 if (nrow(bathymetry_marine) > PSEUDO_CONFIG$n_sample_bath) {
@@ -142,7 +148,18 @@ generate_species_pseudo_absences <- function(species_name, master_pool, config =
   }
 
   presence_data <- st_read(GEOPACKAGE_PATH, layer = layer_name, quiet = TRUE)
-  cat("  ✓ Loaded", nrow(presence_data), "presence records\n")
+  cat("  ✓ Loaded", nrow(presence_data), "presence records (raw OBIS)\n")
+
+  # Use processed (Scottish-waters-clipped) count if available, so the 3:1 ratio
+  # is calculated against the same records that will be used for modelling
+  output_layers <- st_layers(OUTPUT_PATH)$name
+  if (layer_name %in% output_layers) {
+    n_presences <- nrow(st_read(OUTPUT_PATH, layer = layer_name, quiet = TRUE))
+    cat("  ✓ Using processed presence count for ratio:", n_presences, "records\n")
+  } else {
+    n_presences <- nrow(presence_data)
+    cat("  ⚠ Processed layer not found in OUTPUT_PATH — using raw count for ratio\n")
+  }
 
   # Apply species-specific distance buffer exclusion
   cat("  Applying", config$min_distance_km, "km exclusion buffer...\n")
@@ -179,7 +196,7 @@ generate_species_pseudo_absences <- function(species_name, master_pool, config =
   weights <- weights / sum(weights)
 
   # Sample from each stratum
-  n_total_target <- nrow(presence_data) * config$n_ratio
+  n_total_target <- n_presences * config$n_ratio
   sampled_indices <- c()
 
   for (stratum_name in names(config$strata)) {
